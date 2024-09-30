@@ -126,7 +126,8 @@ func main() {
 	// method of your implementation can perform your business logic and then, if the request is
 	// authorized, invoke p.ServeHTTP. Finally, replace p in the below ListenAndServeTLS call with
 	// an object of your newly created type.
-	log.Error("Server stopped: %s", http.ListenAndServeTLS(addr, httpConfig.certFilename, httpConfig.keyFilename, p))
+        // TLS is handled by Cloud Run.
+	log.Error("Server stopped: %s", http.ListenAndServe(addr, p))
 }
 
 // readConfig applies configuration from environment variables.
