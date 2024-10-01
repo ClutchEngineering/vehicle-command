@@ -29,5 +29,6 @@ ENV TESLA_KEY_FILE=/secrets/tesla-private-key.pem
 # ENV TESLA_VERBOSE=true
 
 ENTRYPOINT ["/bin/sh", "-c", \
-  "gcloud secrets versions access latest --secret tesla-private-key > /secrets/tesla-private-key.pem && \
+  "export POSTHOG_API_KEY=$(gcloud secrets versions access latest --secret posthog-api-key) && \
+   gcloud secrets versions access latest --secret tesla-private-key > /secrets/tesla-private-key.pem && \
    exec tesla-http-proxy -port 8080"]

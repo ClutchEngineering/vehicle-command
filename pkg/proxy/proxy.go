@@ -10,12 +10,15 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/google/uuid"
+	"github.com/posthog/posthog-go"
 	"github.com/teslamotors/vehicle-command/internal/authentication"
 	"github.com/teslamotors/vehicle-command/internal/log"
 	"github.com/teslamotors/vehicle-command/pkg/account"
@@ -29,6 +32,7 @@ const (
 	DefaultTimeout       = 10 * time.Second
 	maxRequestBodyBytes  = 512
 	vinLength            = 17
+	appName 		     = "ElectricSidecar"
 	proxyProtocolVersion = "tesla-http-proxy/1.1.0"
 )
 
@@ -213,39 +217,86 @@ func (p *Proxy) forwardRequest(host string, w http.ResponseWriter, req *http.Req
 	io.Copy(w, resp.Body)
 }
 
+func anonymizeVIN(vin string) string {
+    if len(vin) != vinLength {
+        return vin // Return the VIN as is if the length is invalid.
+    }
+    // Replace the last 5 characters of the VIN with zeros.
+    return vin[:12] + "00000"
+}
+
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	log.Info("Received %s request for %s", req.Method, req.URL.Path)
 
+    posthog_client, _ := posthog.NewWithConfig(
+        os.Getenv("POSTHOG_API_KEY"),
+        posthog.Config{
+            Endpoint:       "https://eu.i.posthog.com",
+        },
+    )
+	defer posthog_client.Close()
+
+    urlPath := req.URL.Path
+
+    // Default: no VIN anonymization
+	// Anonymize the path.
+    anonymizedPath := urlPath
+    if strings.HasPrefix(urlPath, "/api/1/vehicles/") {
+		path := strings.Split(urlPath, "/")
+		if len(path) == 7 && path[5] == "command" {
+			command := path[6]
+			vin := path[4]
+
+            anonymizedVIN := anonymizeVIN(vin)
+			anonymizedPath = "/api/1/vehicles/" + anonymizedVIN + "/command/" + command
+		}
+	}
+	distinctID := uuid.New().String() // Generate a new UUID
+
 	acct, err := getAccount(req)
 	if err != nil {
+		posthog_client.Enqueue(posthog.Capture{
+			DistinctId: distinctID,
+			Event:      "tesla_command",
+			Properties: posthog.NewProperties().
+				Set("$current_url", anonymizedPath).
+				Set("$app_name", appName).
+				Set("error", http.StatusText(http.StatusForbidden)),
+		})
 		writeJSONError(w, http.StatusForbidden, err)
 		return
 	}
 
-	if strings.HasPrefix(req.URL.Path, "/api/1/vehicles/") {
-		path := strings.Split(req.URL.Path, "/")
+	posthog_client.Enqueue(posthog.Capture{
+		DistinctId: distinctID,
+		Event:      "tesla_command",
+		Properties: posthog.NewProperties().
+			Set("$current_url", anonymizedPath).
+			Set("$app_name", appName),
+	})
+
+    if strings.HasPrefix(urlPath, "/api/1/vehicles/") {
+		path := strings.Split(urlPath, "/")
 		if len(path) == 7 && path[5] == "command" {
 			command := path[6]
 			vin := path[4]
+
+            anonymizedVIN := anonymizeVIN(vin)
+			anonymizedPath = "/api/1/vehicles/" + anonymizedVIN + "/command/" + command
+
 			if len(vin) != vinLength {
 				writeJSONError(w, http.StatusNotFound, errors.New("expected 17-character VIN in path (do not user Fleet API ID)"))
-				return
-			}
-			if p.isNotSupported(vin) {
+			} else if p.isNotSupported(vin) {
 				p.forwardRequest(acct.Host, w, req)
-			} else {
-				if err := p.handleVehicleCommand(acct, w, req, command, vin); err == ErrCommandUseRESTAPI {
-					p.forwardRequest(acct.Host, w, req)
-				}
+			} else if err := p.handleVehicleCommand(acct, w, req, command, vin); err == ErrCommandUseRESTAPI {
+				p.forwardRequest(acct.Host, w, req)
 			}
-			return
-		}
-		if len(path) == 5 && path[4] == "fleet_telemetry_config" {
+		} else if len(path) == 5 && path[4] == "fleet_telemetry_config" {
 			p.handleFleetTelemetryConfig(acct.Host, w, req)
-			return
 		}
+	} else {
+		p.forwardRequest(acct.Host, w, req)
 	}
-	p.forwardRequest(acct.Host, w, req)
 }
 
 func (p *Proxy) handleFleetTelemetryConfig(host string, w http.ResponseWriter, req *http.Request) {

@@ -6,6 +6,11 @@ gcloud secrets add-iam-policy-binding tesla-private-key \
     --member="serviceAccount:218297886362-compute@developer.gserviceaccount.com" \
     --role="roles/secretmanager.secretAccessor"
 
+echo -n "xxx" | gcloud secrets create posthog-api-key --data-file=-
+gcloud secrets add-iam-policy-binding posthog-api-key \
+    --member="serviceAccount:218297886362-compute@developer.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+
 gcloud projects add-iam-policy-binding electric-sidecar-backend --member='serviceAccount:service-218297886362@gcp-sa-artifactregistry.iam.gserviceaccount.com' --role='roles/storage.objectViewer'
 ```
 
